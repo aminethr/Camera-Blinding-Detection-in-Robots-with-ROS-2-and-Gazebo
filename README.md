@@ -1,7 +1,8 @@
 ## 🔦 Hybrid CNN-Based Camera Blinding Detection for Robots
 
 A hybrid deep learning model designed to detect camera blinding caused by strong light sources, such as flashlights or laser interference. The system is ideal for robotic platforms including UAVs, UGVs, and surveillance agents in both simulation and real-world environments.
-📸 Dataset Collection
+
+## 📸 Dataset Collection
 
 The dataset was generated in a Gazebo simulation using a robot equipped with a light-sensitive camera. The robot was placed in various positions and angles to simulate real-world lighting scenarios, including potential blinding angles.
 
