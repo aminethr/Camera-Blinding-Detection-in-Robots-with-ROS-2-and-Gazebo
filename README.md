@@ -4,7 +4,7 @@ A hybrid deep learning model designed to detect camera blinding caused by strong
 
 ## 📸 Dataset Collection
 
-The dataset was generated in a Gazebo simulation using a robot equipped with a light-sensitive camera. The robot was placed in various positions and angles to simulate real-world lighting scenarios, including potential blinding angles.
+The dataset was generated in a Gazebo simulation using a robot equipped with a normal RGB camera. A light source was placed at different positions and angles relative to the stationary robot to simulate various real-world lighting conditions, including potential blinding scenarios.
 
     The resulting images are grayscale and reflect how light impacts visibility.
 
