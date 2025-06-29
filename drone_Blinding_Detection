@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+import torch
+import torch.nn as nn
+
+# === GLOBAL SETTINGS ===
+
+image_size = (128, 128)  # Image resize size for CNN input
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Use GPU if available
+
+# === FEATURE EXTRACTION FUNCTION ===
+
+def extract_features_from_cvimage(image):
+    """
+    Extracts both CNN-compatible input and handcrafted features (mean brightness + saturation %)
+    from a grayscale OpenCV image.
+    """
+    image_resized = cv2.resize(image, image_size)
+
+    cnn_input = image_resized.astype(np.float32) / 255.0  # Normalize to [0,1]
+    cnn_input = np.expand_dims(cnn_input, axis=0)  # Add channel dimension
+
+    height, width = image.shape
+    total_pixels = height * width
+    mean_brightness = np.mean(image)
+    saturated_pixels = np.sum(image >= 230)  # Hard-coded threshold for "saturated" pixel
+    saturated_percent = (saturated_pixels / total_pixels) * 100
+
+    return cnn_input, np.array([mean_brightness, saturated_percent], dtype=np.float32)
+
+# === CNN + HANDCRAFTED HYBRID MODEL ===
+
+class HybridBlindingModel(nn.Module):
+    """
+    CNN + handcrafted hybrid neural network for detecting camera blinding.
+    """
+    def __init__(self):
+        super().__init__()
+
+        # CNN feature extractor branch
+        self.cnn_branch = nn.Sequential(
+            nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),     # Output: 16 x 64 x 64
+            nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),    # Output: 32 x 32 x 32
+            nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),    # Output: 64 x 16 x 16
+            nn.Flatten()
+        )
+
+        # Final flatten size (should match after 3x pooling)
+        self.flattened_size = 64 * (image_size[0] // 8) * (image_size[1] // 8)
+
+        # Fully connected layer combining CNN and handcrafted features
+        self.fc = nn.Sequential(
+            nn.Linear(self.flattened_size + 2, 128), nn.ReLU(),
+            nn.Linear(128, 1),  # Binary classification (blinded or not)
+            nn.Sigmoid()        # Output: probability
+        )
+
+    def forward(self, image, features):
+        cnn_out = self.cnn_branch(image)
+        combined = torch.cat((cnn_out, features), dim=1)
+        return self.fc(combined)
+
+# === ROS 2 NODE ===
+
+class BlindingDetector(Node):
+    """
+    ROS 2 node that subscribes to camera images and runs blinding detection using the hybrid model.
+    """
+    def __init__(self):
+        super().__init__('blinding_detector')
+
+        self.bridge = CvBridge()
+
+        # Initialize model and load trained weights
+        self.model = HybridBlindingModel()
+
+        # ⚠️ Update the path to the trained model if it's moved or renamed
+        model_path = "/home/amine/ros2_ws/install/drone_swarm/lib/drone_swarm/hybrid_blinding_model.pth"
+        self.model.load_state_dict(torch.load(model_path, map_location=device))
+        self.model.to(device)
+        self.model.eval()  # Set model to evaluation mode (important!)
+
+        # ⚠️ Update the topic name if your robot or simulation uses a different image topic
+        self.subscription = self.create_subscription(
+            Image,
+            '/drone2_camera1_sensor/image_raw',
+            self.image_callback,
+            10
+        )
+
+        self.get_logger().info("🚀 Blinding Detector Node Started")
+
+    def image_callback(self, msg):
+        """
+        Callback executed each time a new image is received.
+        """
+        try:
+            # Convert incoming ROS image message to grayscale OpenCV image
+            cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='mono8')
+        except Exception as e:
+            self.get_logger().error(f"Failed to convert image: {e}")
+            return
+
+        # Extract features from the image
+        cnn_input, handcrafted = extract_features_from_cvimage(cv_image)
+        cnn_input = torch.tensor(cnn_input, dtype=torch.float32).unsqueeze(0).to(device)
+        handcrafted = torch.tensor(handcrafted, dtype=torch.float32).unsqueeze(0).to(device)
+
+        # Perform inference
+        with torch.no_grad():
+            output = self.model(cnn_input, handcrafted)
+
+        prediction = output.item()
+        percent = prediction * 100
+
+        # Log the result with interpretation
+        if prediction >= 0.5:
+            self.get_logger().warn(f"⚠️ BLINDED - Confidence: {percent:.2f}%")
+        else:
+            self.get_logger().info(f"✅ NOT BLINDED - Confidence: {percent:.2f}%")
+
+# === ENTRY POINT ===
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = BlindingDetector()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
+
